@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Frais de transfert – comparer le coût réel</title>
+<link rel="stylesheet" href="shared.css">
+<style>
+  .svc { display: grid; gap: .5rem; grid-template-columns: 2fr repeat(3, 1fr) auto; align-items: end; margin-bottom: .5rem; }
+  .svc label { margin: 0 0 .15rem; font-size: .85rem; }
+  .svc button { padding: .55rem .7rem; }
+  @media (max-width: 40rem) { .svc { grid-template-columns: 1fr 1fr; padding-bottom: .75rem; border-bottom: 1px solid var(--line); } .svc > :first-child { grid-column: 1 / -1; } }
+  .results { margin-top: 2rem; display: grid; gap: .75rem; }
+  .res { background: var(--paper); border-left: 6px solid var(--line); padding: .8rem 1rem; display: flex; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
+  .res.best { border-left-color: var(--accent); }
+  .res strong.big { font-size: 1.6rem; display: block; line-height: 1.1; }
+  .tag { color: var(--accent); font-weight: 700; }
+  .meta { color: var(--muted); font-size: .95rem; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Combien tu perds vraiment sur un transfert</h1>
+  <p class="lead">Les frais affichés ne sont qu’une partie du coût : le taux de change appliqué cache souvent le reste. Saisis les tarifs relevés auprès de chaque service pour comparer ce que ton proche reçoit réellement.</p>
+
+  <div class="row">
+    <div><label for="montant">Montant envoyé</label><input id="montant" type="number" min="0" step="any" value="100000"></div>
+    <div><label for="devEnv">Devise envoyée</label><input id="devEnv" value="XOF"></div>
+    <div><label for="devRec">Devise reçue</label><input id="devRec" value="EUR"></div>
+    <div><label for="ref">Taux de référence (1 envoyée = ? reçue)</label><input id="ref" type="number" min="0" step="any" value="0.00152"></div>
+  </div>
+
+  <h2 style="margin-top:2rem">Services à comparer</h2>
+  <div id="list"></div>
+  <div class="actions"><button class="ghost" id="add" type="button">Ajouter un service</button></div>
+
+  <div class="results" id="results" aria-live="polite"></div>
+  <p class="note">Les valeurs pré-remplies sont des exemples à remplacer par les tarifs réels de chaque service. Le taux de référence se trouve sur un comparateur officiel (banque centrale ou site de taux moyens).</p>
+</div>
+<script>
+const $ = id => document.getElementById(id);
+const KEY = 'frais-transfert-v1';
+let services = [];
+try { services = JSON.parse(localStorage.getItem(KEY)) || []; } catch {}
+if (!services.length) services = [
+  { nom: 'Service A (exemple)', fixe: 1000, pct: 1.5, taux: 0.00148 },
+  { nom: 'Service B (exemple)', fixe: 0, pct: 3, taux: 0.00151 },
+];
+const fmt = (n, cur) => new Intl.NumberFormat('fr-FR', { maximumFractionDigits: 2 }).format(n) + ' ' + cur;
+
+function save() { try { localStorage.setItem(KEY, JSON.stringify(services)); } catch {} }
+
+function drawList() {
+  const list = $('list');
+  list.replaceChildren(...services.map((s, i) => {
+    const row = document.createElement('div');
+    row.className = 'svc';
+    const mk = (label, key, type, step) => {
+      const d = document.createElement('div');
+      const l = document.createElement('label'); l.textContent = label;
+      const inp = document.createElement('input'); inp.type = type; if (step) inp.step = step;
+      inp.value = s[key];
+      inp.addEventListener('input', () => { s[key] = type === 'number' ? parseFloat(inp.value) || 0 : inp.value; save(); compute(); });
+      l.appendChild(inp); d.appendChild(l); return d;
+    };
+    row.append(mk('Nom du service', 'nom', 'text'), mk('Frais fixes', 'fixe', 'number', 'any'), mk('Frais en %', 'pct', 'number', 'any'), mk('Taux appliqué', 'taux', 'number', 'any'));
+    const del = document.createElement('button');
+    del.type = 'button'; del.className = 'danger'; del.textContent = 'Retirer';
+    del.setAttribute('aria-label', 'Retirer ' + (s.nom || 'ce service'));
+    del.addEventListener('click', () => { services.splice(i, 1); save(); drawList(); compute(); });
+    row.appendChild(del);
+    return row;
+  }));
+}
+
+function compute() {
+  const m = parseFloat($('montant').value) || 0;
+  const ref = parseFloat($('ref').value) || 0;
+  const de = $('devEnv').value, dr = $('devRec').value;
+  const out = $('results');
+  if (!services.length || !m) { out.innerHTML = '<p class="empty">Ajoute un montant et au moins un service pour voir la comparaison.</p>'; return; }
+  const rows = services.map(s => {
+    const recu = (m - s.fixe - m * s.pct / 100) * s.taux;
+    const coutReel = ref ? m - recu / ref : NaN; // en devise envoyée
+    return { ...s, recu, coutReel };
+  }).sort((a, b) => b.recu - a.recu);
+  const best = rows[0].recu;
+  out.replaceChildren(...rows.map((r, i) => {
+    const d = document.createElement('div');
+    d.className = 'res' + (i === 0 ? ' best' : '');
+    const left = document.createElement('div');
+    const name = document.createElement('div'); name.textContent = r.nom || 'Sans nom';
+    if (i === 0) { const t = document.createElement('span'); t.className = 'tag'; t.textContent = ' – le plus avantageux'; name.appendChild(t); }
+    const big = document.createElement('strong'); big.className = 'big'; big.textContent = fmt(r.recu, dr);
+    const meta = document.createElement('span'); meta.className = 'meta';
+    meta.textContent = i === 0 ? 'reçus par ton proche' : `${fmt(best - r.recu, dr)} de moins que le meilleur`;
+    left.append(name, big, meta);
+    const right = document.createElement('div');
+    right.className = 'meta';
+    right.textContent = isNaN(r.coutReel) ? 'Renseigne le taux de référence pour voir le coût réel.' : `Coût réel : ${fmt(r.coutReel, de)} (${(r.coutReel / m * 100).toFixed(1)} %)`;
+    d.append(left, right);
+    return d;
+  }));
+}
+
+['montant','devEnv','devRec','ref'].forEach(k => $(k).addEventListener('input', compute));
+$('add').addEventListener('click', () => { services.push({ nom: '', fixe: 0, pct: 0, taux: parseFloat($('ref').value) || 0 }); save(); drawList(); compute(); });
+drawList(); compute();
+</script>
+</body>
+</html>
