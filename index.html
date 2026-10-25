@@ -16,6 +16,8 @@
   .res strong.big { font-size: 1.6rem; display: block; line-height: 1.1; }
   .tag { color: var(--accent); font-weight: 700; }
   .meta { color: var(--muted); font-size: .95rem; }
+  .warn { border-left: 4px solid var(--danger); padding-left: .75rem; color: var(--danger); font-weight: 700; margin-top: 1rem; }
+  .invalid { color: var(--danger); }
 </style>
 </head>
 <body>
@@ -23,36 +25,77 @@
   <h1>Combien tu perds vraiment sur un transfert</h1>
   <p class="lead">Les frais affichés ne sont qu’une partie du coût : le taux de change appliqué cache souvent le reste. Saisis les tarifs relevés auprès de chaque service pour comparer ce que ton proche reçoit réellement.</p>
 
+  <label for="mode">Je veux…</label>
+  <select id="mode">
+    <option value="envoi">comparer pour un montant que j’envoie</option>
+    <option value="reception">savoir combien envoyer pour que mon proche reçoive un montant précis</option>
+  </select>
+
   <div class="row">
-    <div><label for="montant">Montant envoyé</label><input id="montant" type="number" min="0" step="any" value="100000"></div>
-    <div><label for="devEnv">Devise envoyée</label><input id="devEnv" value="XOF"></div>
-    <div><label for="devRec">Devise reçue</label><input id="devRec" value="EUR"></div>
-    <div><label for="ref">Taux de référence (1 envoyée = ? reçue)</label><input id="ref" type="number" min="0" step="any" value="0.00152"></div>
+    <div><label for="montant" id="montantLabel">Montant envoyé</label><input id="montant" type="number" min="0" step="any"></div>
+    <div><label for="devEnv">Devise envoyée</label><input id="devEnv"></div>
+    <div><label for="devRec">Devise reçue</label><input id="devRec"></div>
+    <div><label for="ref">Taux de référence (1 envoyée = ? reçue)</label><input id="ref" type="number" min="0" step="any"></div>
+    <div><label for="releve">Tarifs relevés le</label><input id="releve" type="date"></div>
   </div>
 
   <h2 style="margin-top:2rem">Services à comparer</h2>
   <div id="list"></div>
   <div class="actions"><button class="ghost" id="add" type="button">Ajouter un service</button></div>
 
+  <div id="avert" aria-live="polite"></div>
   <div class="results" id="results" aria-live="polite"></div>
-  <p class="note">Les valeurs pré-remplies sont des exemples à remplacer par les tarifs réels de chaque service. Le taux de référence se trouve sur un comparateur officiel (banque centrale ou site de taux moyens).</p>
+  <div class="actions">
+    <button class="ghost" id="copyLink" type="button">Copier le lien de cette comparaison</button>
+    <button class="ghost" id="copyText" type="button">Copier le résumé (WhatsApp)</button>
+  </div>
+  <p class="note">Les valeurs pré-remplies sont des exemples à remplacer par les tarifs réels de chaque service. Le taux de référence se trouve sur un comparateur officiel (banque centrale ou site de taux moyens). Le lien copié contient tes chiffres dans l’adresse : rien n’est envoyé à un serveur.</p>
 </div>
 <script>
 const $ = id => document.getElementById(id);
-const KEY = 'frais-transfert-v1';
-let services = [];
-try { services = JSON.parse(localStorage.getItem(KEY)) || []; } catch {}
-if (!services.length) services = [
-  { nom: 'Service A (exemple)', fixe: 1000, pct: 1.5, taux: 0.00148 },
-  { nom: 'Service B (exemple)', fixe: 0, pct: 3, taux: 0.00151 },
-];
-const fmt = (n, cur) => new Intl.NumberFormat('fr-FR', { maximumFractionDigits: 2 }).format(n) + ' ' + cur;
+const KEY = 'frais-transfert-v2';
+const DEFAUT = () => ({
+  mode: 'envoi', montantEnvoi: 100000, montantRecu: 150, devEnv: 'XOF', devRec: 'EUR', ref: 0.00152, releve: '',
+  services: [
+    { nom: 'Service A (exemple)', fixe: 1000, pct: 1.5, taux: 0.00148 },
+    { nom: 'Service B (exemple)', fixe: 0, pct: 3, taux: 0.00151 },
+  ],
+});
+const num = v => (Number.isFinite(+v) ? +v : 0);
 
-function save() { try { localStorage.setItem(KEY, JSON.stringify(services)); } catch {} }
+// Un état venant du navigateur ou d’un lien partagé est toujours revalidé.
+function valider(o) {
+  const d = DEFAUT();
+  if (!o || typeof o !== 'object') return d;
+  const t = (v, def) => (typeof v === 'string' ? v.slice(0, 40) : def);
+  return {
+    mode: o.mode === 'reception' ? 'reception' : 'envoi',
+    montantEnvoi: num(o.montantEnvoi ?? d.montantEnvoi), montantRecu: num(o.montantRecu ?? d.montantRecu),
+    devEnv: t(o.devEnv, d.devEnv), devRec: t(o.devRec, d.devRec), ref: num(o.ref ?? d.ref),
+    releve: /^\d{4}-\d{2}-\d{2}$/.test(o.releve) ? o.releve : '',
+    services: Array.isArray(o.services) ? o.services.slice(0, 12).map(s => ({ nom: t(s && s.nom, ''), fixe: num(s && s.fixe), pct: num(s && s.pct), taux: num(s && s.taux) })) : d.services,
+  };
+}
+const enc = o => { let s = ''; new TextEncoder().encode(JSON.stringify(o)).forEach(x => { s += String.fromCharCode(x); }); return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); };
+const dec = t => JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(t.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0))));
+
+let etat = DEFAUT();
+try {
+  if (location.hash.startsWith('#d=')) etat = valider(dec(location.hash.slice(3)));
+  else {
+    const v2 = localStorage.getItem(KEY), v1 = localStorage.getItem('frais-transfert-v1');
+    if (v2) etat = valider(JSON.parse(v2));
+    else if (v1) etat = valider({ services: JSON.parse(v1) });          // reprise des anciens services
+  }
+} catch { etat = DEFAUT(); }
+
+const fmt = (n, cur) => new Intl.NumberFormat('fr-FR', { maximumFractionDigits: 2 }).format(n) + ' ' + cur;
+const pct1 = x => new Intl.NumberFormat('fr-FR', { minimumFractionDigits: 1, maximumFractionDigits: 1 }).format(x);
+function save() { try { localStorage.setItem(KEY, JSON.stringify(etat)); } catch {} }
 
 function drawList() {
   const list = $('list');
-  list.replaceChildren(...services.map((s, i) => {
+  list.replaceChildren(...etat.services.map((s, i) => {
     const row = document.createElement('div');
     row.className = 'svc';
     const mk = (label, key, type, step) => {
@@ -67,45 +110,92 @@ function drawList() {
     const del = document.createElement('button');
     del.type = 'button'; del.className = 'danger'; del.textContent = 'Retirer';
     del.setAttribute('aria-label', 'Retirer ' + (s.nom || 'ce service'));
-    del.addEventListener('click', () => { services.splice(i, 1); save(); drawList(); compute(); });
+    del.addEventListener('click', () => { etat.services.splice(i, 1); save(); drawList(); compute(); });
     row.appendChild(del);
     return row;
   }));
 }
 
+function fillInputs() {
+  $('mode').value = etat.mode;
+  $('montant').value = etat.mode === 'envoi' ? etat.montantEnvoi : etat.montantRecu;
+  $('montantLabel').textContent = etat.mode === 'envoi' ? 'Montant envoyé' : 'Montant que ton proche doit recevoir';
+  $('devEnv').value = etat.devEnv; $('devRec').value = etat.devRec; $('ref').value = etat.ref; $('releve').value = etat.releve;
+}
+
+let lignes = [];
 function compute() {
-  const m = parseFloat($('montant').value) || 0;
-  const ref = parseFloat($('ref').value) || 0;
-  const de = $('devEnv').value, dr = $('devRec').value;
+  const envoi = etat.mode === 'envoi';
+  const m = envoi ? etat.montantEnvoi : etat.montantRecu;
+  const { ref, devEnv: de, devRec: dr } = etat;
   const out = $('results');
-  if (!services.length || !m) { out.innerHTML = '<p class="empty">Ajoute un montant et au moins un service pour voir la comparaison.</p>'; return; }
-  const rows = services.map(s => {
-    const recu = (m - s.fixe - m * s.pct / 100) * s.taux;
-    const coutReel = ref ? m - recu / ref : NaN; // en devise envoyée
-    return { ...s, recu, coutReel };
-  }).sort((a, b) => b.recu - a.recu);
-  const best = rows[0].recu;
-  out.replaceChildren(...rows.map((r, i) => {
+  const jours = etat.releve ? Math.floor((Date.now() - new Date(etat.releve + 'T00:00:00')) / 864e5) : null;
+  $('avert').replaceChildren(...(jours !== null && jours > 3 ? [Object.assign(document.createElement('p'), { className: 'warn', textContent: `Tarifs relevés il y a ${jours} jours : vérifie-les avant d’envoyer.` })] : []));
+  if (!etat.services.length || !m) { lignes = []; out.innerHTML = '<p class="empty">Ajoute un montant et au moins un service pour voir la comparaison.</p>'; return; }
+
+  lignes = etat.services.map(s => {
+    const part = 1 - s.pct / 100;
+    if (s.taux <= 0 || part <= 0) return { ...s, invalide: true };             // frais ≥ 100 % ou taux nul
+    const envoye = envoi ? m : (m / s.taux + s.fixe) / part;
+    const recu = envoi ? Math.max(0, (m - s.fixe - m * s.pct / 100) * s.taux) : m;
+    return { ...s, envoye, recu, coutReel: ref ? envoye - recu / ref : NaN };
+  });
+  const valides = lignes.filter(l => !l.invalide).sort((a, b) => (envoi ? b.recu - a.recu : a.envoye - b.envoye));
+  lignes = [...valides, ...lignes.filter(l => l.invalide)];
+  const best = valides[0];
+
+  out.replaceChildren(...lignes.map((r, i) => {
     const d = document.createElement('div');
-    d.className = 'res' + (i === 0 ? ' best' : '');
+    d.className = 'res' + (i === 0 && !r.invalide ? ' best' : '');
     const left = document.createElement('div');
     const name = document.createElement('div'); name.textContent = r.nom || 'Sans nom';
-    if (i === 0) { const t = document.createElement('span'); t.className = 'tag'; t.textContent = ' – le plus avantageux'; name.appendChild(t); }
-    const big = document.createElement('strong'); big.className = 'big'; big.textContent = fmt(r.recu, dr);
-    const meta = document.createElement('span'); meta.className = 'meta';
-    meta.textContent = i === 0 ? 'reçus par ton proche' : `${fmt(best - r.recu, dr)} de moins que le meilleur`;
-    left.append(name, big, meta);
-    const right = document.createElement('div');
-    right.className = 'meta';
-    right.textContent = isNaN(r.coutReel) ? 'Renseigne le taux de référence pour voir le coût réel.' : `Coût réel : ${fmt(r.coutReel, de)} (${(r.coutReel / m * 100).toFixed(1)} %)`;
+    if (i === 0 && !r.invalide) { const t = document.createElement('span'); t.className = 'tag'; t.textContent = ' – le plus avantageux'; name.appendChild(t); }
+    left.appendChild(name);
+    const right = document.createElement('div'); right.className = 'meta';
+    if (r.invalide) {
+      const p = document.createElement('span'); p.className = 'invalid'; p.textContent = 'Données incohérentes : vérifie le taux appliqué (> 0) et les frais en % (< 100).';
+      left.appendChild(p);
+    } else {
+      const big = document.createElement('strong'); big.className = 'big';
+      big.textContent = envoi ? fmt(r.recu, dr) : fmt(r.envoye, de);
+      const meta = document.createElement('span'); meta.className = 'meta';
+      meta.textContent = i === 0 ? (envoi ? 'reçus par ton proche' : 'à envoyer')
+        : envoi ? `${fmt(best.recu - r.recu, dr)} de moins que le meilleur` : `${fmt(r.envoye - best.envoye, de)} de plus que le meilleur`;
+      left.append(big, meta);
+      right.textContent = isNaN(r.coutReel) ? 'Renseigne le taux de référence pour voir le coût réel.'
+        : `Coût réel : ${fmt(r.coutReel, de)} (${pct1(r.coutReel / r.envoye * 100)} %)`;
+      if (envoi && (m - r.fixe - m * r.pct / 100) < 0) right.textContent = 'Les frais dépassent le montant envoyé.';
+    }
     d.append(left, right);
     return d;
   }));
 }
 
-['montant','devEnv','devRec','ref'].forEach(k => $(k).addEventListener('input', compute));
-$('add').addEventListener('click', () => { services.push({ nom: '', fixe: 0, pct: 0, taux: parseFloat($('ref').value) || 0 }); save(); drawList(); compute(); });
-drawList(); compute();
+function lire() {
+  const envoi = etat.mode === 'envoi';
+  etat[envoi ? 'montantEnvoi' : 'montantRecu'] = parseFloat($('montant').value) || 0;
+  etat.devEnv = $('devEnv').value; etat.devRec = $('devRec').value;
+  etat.ref = parseFloat($('ref').value) || 0; etat.releve = $('releve').value;
+}
+['montant', 'devEnv', 'devRec', 'ref', 'releve'].forEach(k => $(k).addEventListener('input', () => { lire(); save(); compute(); }));
+$('mode').addEventListener('change', () => { lire(); etat.mode = $('mode').value; fillInputs(); save(); compute(); });
+$('add').addEventListener('click', () => { etat.services.push({ nom: '', fixe: 0, pct: 0, taux: etat.ref }); save(); drawList(); compute(); });
+
+async function copier(bouton, texte, libelle) {
+  try { await navigator.clipboard.writeText(texte); bouton.textContent = 'Copié'; }
+  catch { bouton.textContent = 'Copie impossible : copie à la main'; }
+  setTimeout(() => { bouton.textContent = libelle; }, 2500);
+}
+$('copyLink').addEventListener('click', e => copier(e.target, location.origin + location.pathname + '#d=' + enc(etat), 'Copier le lien de cette comparaison'));
+$('copyText').addEventListener('click', e => {
+  const envoi = etat.mode === 'envoi', { devEnv: de, devRec: dr } = etat;
+  const titre = envoi ? `Pour envoyer ${fmt(etat.montantEnvoi, de)} :` : `Pour que mon proche reçoive ${fmt(etat.montantRecu, dr)} :`;
+  const corps = lignes.filter(l => !l.invalide).map((l, i) => `${i + 1}. ${l.nom || 'Sans nom'} : ` +
+    (envoi ? `il reçoit ${fmt(l.recu, dr)}` : `j’envoie ${fmt(l.envoye, de)}`) + (isNaN(l.coutReel) ? '' : ` (coût réel ${pct1(l.coutReel / l.envoye * 100)} %)`));
+  copier(e.target, [titre, ...corps, etat.releve ? `Tarifs relevés le ${new Date(etat.releve + 'T00:00:00').toLocaleDateString('fr-FR')}.` : ''].filter(Boolean).join('\n'), 'Copier le résumé (WhatsApp)');
+});
+
+fillInputs(); drawList(); compute();
 </script>
 </body>
 </html>
